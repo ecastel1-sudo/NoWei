@@ -48,15 +48,19 @@ def rebalance(n_device=64, n_red_expert=64, algorithm='deepseek'):
       how quickstart.py scores our STARE-LB policy.
     """
     # Map algorithm alias -> source filename at the repo root.
+    # 'proposed' / 'submission' always point to the official entry
+    # (submission.py). Any 'submission_vN' alias resolves dynamically to
+    # the matching submission_vN.py if it exists at the repo root, so
+    # newly-added versions are picked up without editing this table.
+    from pathlib import Path as _Path
+    repo_root_for_aliases = _Path(__file__).resolve().parent.parent
     sub_aliases = {
         'proposed': 'submission.py',
         'submission': 'submission.py',
-        'submission_v2': 'submission_v2.py',
-        'submission_v3': 'submission_v3.py',
-        'submission_v4': 'submission_v4.py',
-        'submission_v5': 'submission_v5.py',
-        'submission_v6': 'submission_v6.py',
     }
+    if (algorithm.startswith('submission_v')
+            and (repo_root_for_aliases / f'{algorithm}.py').exists()):
+        sub_aliases[algorithm] = f'{algorithm}.py'
     if algorithm in sub_aliases:
         # Lazy import so the DeepSeek path is free of any submission cost.
         import sys

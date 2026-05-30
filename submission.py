@@ -88,6 +88,33 @@ _EXPERT_BYTES = 88_080_384
 _TRANSFER_BANDWIDTH_BPS = 900_000_000_000
 _TIME_PER_MOVE_S = _EXPERT_BYTES / _TRANSFER_BANDWIDTH_BPS  # ~9.787e-5 s
 
+# ---- energy-composite constants (see ENERGY_COMPOSITE_SCORE.pdf) ----
+# The grader's bandwidth (900 GB/s) is exactly NVLink 4.0 on H100-SXM, so we
+# can express the gate's cost/benefit in joules using H100 published numbers.
+# The gate has TWO physically motivated cost models for one expert move:
+#   E_MOVE_J_TDP  ~ 0.069  J  (= H100_TDP_W * 88MB / 900GB/s)
+#       Conservative: charges the link at the node's TDP for the move's
+#       full duration. Mathematically equivalent to the existing time-based
+#       gate (both terms scale by H100_TDP_W), so behaviour is unchanged.
+#   E_MOVE_J_BITS ~ 0.0011 J  (= 88MB * 8 * (NVLink 1.3 + HBM3 0.29) pJ/bit)
+#       Physically minimal: only the datapath energy (NVLink interconnect
+#       + HBM3 read). Roughly 63x cheaper per move, so the gate accepts
+#       far smaller PAR gains per move and redeploys much more aggressively.
+# Set BIT_ENERGY_GATE = True to opt in to the bit-energy pricing.
+_H100_TDP_W = 700.0
+_NVLINK_PJ_PER_BIT = 1.3
+_HBM3_PJ_PER_BIT = 0.29
+_E_PAR_POINT_J = _H100_TDP_W * _BALANCED_COMPUTE_SECONDS  # 42_000 J
+_E_MOVE_J_TDP = _H100_TDP_W * _EXPERT_BYTES / _TRANSFER_BANDWIDTH_BPS
+_E_MOVE_J_BITS = _EXPERT_BYTES * 8 * (_NVLINK_PJ_PER_BIT + _HBM3_PJ_PER_BIT) * 1e-12
+
+# Default False keeps the gate identical to the time-based formulation we
+# tuned GATE_SAFETY=16 against. Flip to True to price moves at NVLink+HBM
+# datapath cost — every PAR-improving move below the existing safety gate
+# becomes acceptable, which is the correct behaviour if the real interconnect
+# cost is closer to the bit-energy bound than to the TDP-window bound.
+BIT_ENERGY_GATE = False
+
 # Cost/benefit safety multiplier on the gate.
 #   1.0  = pure scoring-formula math, no fudge.
 #   <1.0 = let more moves through (closer to "always redeploy").
@@ -341,13 +368,18 @@ def rebalance(hotness, n_device: int, n_red_expert: int):
 
     deploy_out = cur.copy()
     changed: list[int] = []
-    # Gate threshold: a layer is worth redeploying iff
-    #     (cur_par - new_par) * BALANCED_COMPUTE_SECONDS / n_layers
-    #         > moves * TIME_PER_MOVE_S * GATE_SAFETY
-    # Pre-divide the RHS by n_layers to get a per-move PAR threshold so the
-    # comparison is one multiply per layer.
-    par_per_move_threshold = (_TIME_PER_MOVE_S * n_layers * GATE_SAFETY /
-                              _BALANCED_COMPUTE_SECONDS)
+    # Gate threshold, expressed equivalently in time or energy units.
+    # A layer is worth redeploying iff
+    #     gain_par_for_layer * (energy_per_PAR_point / n_layers)
+    #         > moves * energy_per_move * GATE_SAFETY
+    # Pre-divide the RHS by (energy_per_PAR_point / n_layers) to get a
+    # per-move PAR threshold so the comparison is one multiply per layer.
+    # The TDP-energy variant collapses to the historical time formula
+    # (energy_per_X = H100_TDP_W * time_per_X, ratio is unchanged); the
+    # bit-energy variant prices movement ~63x lower, opening the gate.
+    move_energy_j = _E_MOVE_J_BITS if BIT_ENERGY_GATE else _E_MOVE_J_TDP
+    par_per_move_threshold = (move_energy_j * n_layers * GATE_SAFETY /
+                              _E_PAR_POINT_J)
 
     # Process layers in order of total smoothed load: the simulator
     # redeploys at most one layer per iter, so putting heavy layers first

@@ -69,6 +69,35 @@ BALANCED_COMPUTE_SECONDS = 60.0
 EXPERT_BYTES = 88_080_384
 TRANSFER_BANDWIDTH_BYTES_PER_SECOND = 900_000_000_000
 
+# ---------------------------------------------------------------------------
+# Energy-composite constants (see ENERGY_COMPOSITE_SCORE.pdf).
+#
+# The simulator's bandwidth constant (900 GB/s) is exactly NVLink 4.0 on
+# H100-SXM, so we attach that platform's published power numbers to express
+# the existing time score in joules. We expose two per-move energies:
+#
+#   - E_MOVE_J_TDP  (~0.069 J): TDP-window method. Conservative upper bound.
+#                   Mathematically equivalent to the existing time-based
+#                   composite score (both terms scale by H100_TDP_W), so any
+#                   "TDP energy score" ranks identically to composite_score.
+#                   We expose it as a sanity column.
+#   - E_MOVE_J_BITS (~0.0011 J): bit-energy method (NVLink 1.3 pJ/bit + HBM3
+#                   0.29 pJ/bit). The physically correct datapath cost.
+#                   Weighs movement ~63x lighter than the TDP method, so the
+#                   resulting energy score genuinely reranks transit-heavy
+#                   submissions.
+#
+# E_PAR_POINT_J is the energy charge for one PAR point per case window:
+# the slowest device runs (PAR-1)x extra compute for BALANCED_COMPUTE_SECONDS
+# at H100_TDP_W.
+# ---------------------------------------------------------------------------
+H100_TDP_W = 700.0
+NVLINK_PJ_PER_BIT = 1.3
+HBM3_PJ_PER_BIT = 0.29
+E_PAR_POINT_J = H100_TDP_W * BALANCED_COMPUTE_SECONDS
+E_MOVE_J_TDP = H100_TDP_W * EXPERT_BYTES / TRANSFER_BANDWIDTH_BYTES_PER_SECOND
+E_MOVE_J_BITS = EXPERT_BYTES * 8 * (NVLINK_PJ_PER_BIT + HBM3_PJ_PER_BIT) * 1e-12
+
 # Per-method collection intervals matching dynamic_lb_simulator.py run().
 COLLECTION_INTERVAL = {
     "deepseek": 1024,      # line 220
@@ -122,6 +151,20 @@ def transmission_time_seconds(transmit_amount: int) -> float:
 
 def modeled_runtime_seconds(mean_par: float, transmit_amount: int) -> float:
     return BALANCED_COMPUTE_SECONDS * mean_par + transmission_time_seconds(transmit_amount)
+
+
+def composite_energy_joules(mean_par: float, transmit_amount: int, n_cases: int,
+                            move_energy_j: float = E_MOVE_J_BITS) -> float:
+    """Total joules consumed by a method across n_cases windows.
+
+    Mirrors modeled_runtime_seconds but in energy units. With move_energy_j =
+    E_MOVE_J_TDP this collapses to H100_TDP_W * total_time_seconds, so the
+    resulting score equals the existing composite_score. With move_energy_j =
+    E_MOVE_J_BITS it weighs each expert move at the NVLink+HBM datapath cost
+    (~0.0011 J) instead of the TDP-window cost (~0.069 J), which is the
+    physically minimal interpretation of expert movement.
+    """
+    return E_PAR_POINT_J * float(mean_par) * int(n_cases) + move_energy_j * float(transmit_amount)
 
 
 def load_trace(repo_root: Path, model: str, dataset: str,
@@ -313,17 +356,38 @@ def aggregate_composite(case_records: list[dict]) -> dict:
             a["n_cases"] += 1
     out: dict[str, dict] = {}
     deepseek_total = agg["deepseek"]["total_time"] or 1.0
+    deepseek_par = float(np.mean(agg["deepseek"]["mean_par"])) if agg["deepseek"]["mean_par"] else 0.0
+    deepseek_tx = int(agg["deepseek"]["transmit"])
+    deepseek_n = int(agg["deepseek"]["n_cases"]) or 1
+    e_baseline_tdp = composite_energy_joules(deepseek_par, deepseek_tx, deepseek_n,
+                                             move_energy_j=E_MOVE_J_TDP) or 1.0
+    e_baseline_bits = composite_energy_joules(deepseek_par, deepseek_tx, deepseek_n,
+                                              move_energy_j=E_MOVE_J_BITS) or 1.0
     for m in methods:
         a = agg[m]
         if a["n_cases"] == 0:
             continue
+        mean_par = float(np.mean(a["mean_par"]))
+        n_cases = int(a["n_cases"])
+        e_tdp = composite_energy_joules(mean_par, a["transmit"], n_cases,
+                                        move_energy_j=E_MOVE_J_TDP)
+        e_bits = composite_energy_joules(mean_par, a["transmit"], n_cases,
+                                         move_energy_j=E_MOVE_J_BITS)
         out[m] = {
-            "n_cases": a["n_cases"],
-            "mean_par": float(np.mean(a["mean_par"])),
+            "n_cases": n_cases,
+            "mean_par": mean_par,
             "transmit": int(a["transmit"]),
             "transmission_time_seconds": transmission_time_seconds(a["transmit"]),
             "total_time_seconds": float(a["total_time"]),
             "composite_score": 100.0 * deepseek_total / float(a["total_time"]),
+            # Energy variants (see ENERGY_COMPOSITE_SCORE.pdf). _tdp ranks
+            # identically to composite_score by construction; _bits is the
+            # physically minimal version that weighs movement at NVLink+HBM
+            # datapath cost (~0.0011 J/move).
+            "energy_total_joules_tdp": e_tdp,
+            "energy_total_joules_bits": e_bits,
+            "energy_score_tdp": 100.0 * e_baseline_tdp / e_tdp,
+            "energy_score_bits": 100.0 * e_baseline_bits / e_bits,
             "algo_max_s": a["algo_max_s"],
             "algo_mean_s": float(np.mean(a["algo_mean_s"])) if a["algo_mean_s"] else 0.0,
         }
@@ -376,6 +440,7 @@ def print_composite(composite: dict, n_total_grader_cases: int) -> None:
         "method", "n_cases", "mean_par", "transmit",
         "transmission_time_s", "total_time_s",
         "algo_max_s", "algo_mean_s", "composite_score",
+        "energy_MJ_bits", "energy_score_bits",
     ]
     rows: list[dict[str, str]] = []
     for m, a in composite.items():
@@ -389,6 +454,8 @@ def print_composite(composite: dict, n_total_grader_cases: int) -> None:
             "algo_max_s": f"{a['algo_max_s']:.4f}",
             "algo_mean_s": f"{a['algo_mean_s']:.4f}",
             "composite_score": f"{a['composite_score']:.4f}",
+            "energy_MJ_bits": f"{a['energy_total_joules_bits'] / 1e6:.4f}",
+            "energy_score_bits": f"{a['energy_score_bits']:.4f}",
         })
     widths = {h: len(h) for h in headers}
     for row in rows:
