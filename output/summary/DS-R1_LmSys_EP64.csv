@@ -1,0 +1,4 @@
+method,mean_par,total_transit,transmission_time_s,total_time_s,algo_calls,algo_max_s,algo_mean_s,score_vs_DS-EPLB
+Default,2.085570,0,0.000000,125.134190,0,0.000000,0.000000,96.572800
+DS-EPLB,1.983935,18489,1.809465,120.845591,1,1.070898,1.070898,100.000000
+STARE-LB,1.998047,15343,1.501575,121.384371,8,0.014087,0.011219,99.556137

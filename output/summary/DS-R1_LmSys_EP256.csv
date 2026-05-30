@@ -1,0 +1,4 @@
+method,mean_par,total_transit,transmission_time_s,total_time_s,algo_calls,algo_max_s,algo_mean_s,score_vs_deepseek
+default,4.802255,0,0.000000,288.135281,0,0.000000,0.000000,92.424637
+deepseek,4.390234,29570,2.893930,266.307986,1,4.107195,4.107195,100.000000
+submission,1.852867,118711,11.617901,122.789944,6,0.207700,0.202550,216.880941
