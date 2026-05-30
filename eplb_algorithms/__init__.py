@@ -58,9 +58,17 @@ def rebalance(n_device=64, n_red_expert=64, algorithm='deepseek'):
         'proposed': 'submission.py',
         'submission': 'submission.py',
     }
-    if (algorithm.startswith('submission_v')
-            and (repo_root_for_aliases / f'{algorithm}.py').exists()):
-        sub_aliases[algorithm] = f'{algorithm}.py'
+    if algorithm.startswith('submission_v'):
+        # Historical trial submissions live in trials/submissions/ after the
+        # cleanup; keep root as a fallback so legacy invocations still work.
+        candidate_paths = [
+            repo_root_for_aliases / 'trials' / 'submissions' / f'{algorithm}.py',
+            repo_root_for_aliases / f'{algorithm}.py',
+        ]
+        for candidate in candidate_paths:
+            if candidate.exists():
+                sub_aliases[algorithm] = str(candidate.relative_to(repo_root_for_aliases))
+                break
     if algorithm in sub_aliases:
         # Lazy import so the DeepSeek path is free of any submission cost.
         import sys
