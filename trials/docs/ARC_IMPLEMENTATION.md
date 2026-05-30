@@ -32,6 +32,26 @@ one-call spike.
 So v2 was an attempt to take that vocabulary literally and bolt it
 onto v1.
 
+## Takeaways (the toy-room version)
+
+Think of experts as toys and GPUs as shelves. Popular toys get a spare
+copy. Rearranging the room is annoying. ARC told us three things to
+watch for:
+
+- **"This toy is always popular" (ARC-A).** Not "everyone wanted it
+  *once* this morning." If a toy has been hot for **3 checks in a
+  row**, we whisper to the packer: *"this one counts a little extra."*
+  So we don't shuffle the room because of a one-minute fad.
+- **"We just cleaned this corner" (ARC-B).** If we just moved toys on
+  **shelf L**, we say: *"don't touch shelf L again right away."* Like
+  tidying the Lego corner — don't dump it all out again 2 minutes
+  later. The rule fades after a couple of turns.
+- **"Oops, we put that toy away and they want it again" (ARC-C —
+  ghost).** We removed a spare copy of a toy (demoted 2 → 1). Next
+  turn it's hot again. ARC calls that a **ghost**: *"we were wrong to
+  put it away."* So we make the whole shelf harder to rearrange until
+  things calm down.
+
 ## What v2 actually does
 
 v1 was already running EWMA on the per-expert load, then feeding that
